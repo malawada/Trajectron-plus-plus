@@ -20,7 +20,7 @@ def derivative_of(x, dt=1, radian=False):
     if radian:
         x = make_continuous_copy(x)
 
-    not_nan_mask = ~np.isnan(x)
+    not_nan_mask = ~np.isnan(x.astype(np.float32)) #fix bug where array is dtype object
     masked_x = x[not_nan_mask]
 
     if masked_x.shape[-1] < 2:
@@ -29,5 +29,5 @@ def derivative_of(x, dt=1, radian=False):
     dx = np.full_like(x, np.nan)
     dx[not_nan_mask] = np.ediff1d(masked_x, to_begin=(masked_x[1] - masked_x[0])) / dt
 
-    return dx
+    return dx.astype(np.float32) #fix bug where array is dtype object
 

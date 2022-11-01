@@ -1,5 +1,6 @@
 import sys
 import os
+import pdb
 import numpy as np
 import pandas as pd
 import dill
@@ -303,7 +304,7 @@ def process_scene(ns_scene, env, nusc, data_path):
             # Kalman filter Agent
             vx = derivative_of(x, scene.dt)
             vy = derivative_of(y, scene.dt)
-            velocity = np.linalg.norm(np.stack((vx, vy), axis=-1), axis=-1)
+            velocity = np.linalg.norm(np.stack((vx, vy), axis=-1).astype(np.float32), axis=-1) #fix bug where array is dtype object
 
             filter_veh = NonlinearKinematicBicycle(dt=scene.dt, sMeasurement=1.0)
             P_matrix = None
@@ -336,11 +337,11 @@ def process_scene(ns_scene, env, nusc, data_path):
                     )
                     P_matrix = P_matrix_new
 
-            curvature, pl, _ = trajectory_curvature(np.stack((x, y), axis=-1))
+            curvature, pl, _ = trajectory_curvature(np.stack((x, y), axis=-1).astype(np.float32))
             if pl < 1.0:  # vehicle is "not" moving
-                x = x[0].repeat(max_timesteps + 1)
-                y = y[0].repeat(max_timesteps + 1)
-                heading = heading[0].repeat(max_timesteps + 1)
+                x = x[0:1].repeat(max_timesteps + 1)
+                y = y[0:1].repeat(max_timesteps + 1)
+                heading = heading[0:1].repeat(max_timesteps + 1)
             global total
             global curv_0_2
             global curv_0_1
