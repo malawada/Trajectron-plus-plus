@@ -8,10 +8,10 @@ class Scene(object):
     def __init__(self, timesteps, map=None, dt=1, name="", frequency_multiplier=1, aug_func=None,  non_aug_scene=None):
         self.map = map
         self.timesteps = timesteps
-        self.dt = dt
-        self.name = name
+        self.dt = dt #time delta
+        self.name = name #nuscenes scene number
 
-        self.nodes = []
+        self.nodes = [] #list of nodes in <OBJECT TYPE>/<instance ID> format
 
         self.robot = None
 

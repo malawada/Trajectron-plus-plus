@@ -1,7 +1,7 @@
 import torch
 from torch import nn, optim, utils
 import numpy as np
-import os
+import os, pdb
 import time
 import dill
 import json
@@ -11,6 +11,8 @@ import warnings
 from tqdm import tqdm
 import visualization
 import evaluation
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from argument_parser import args
 from model.trajectron import Trajectron
@@ -118,9 +120,9 @@ def main():
         for scene in train_env.scenes:
             scene.add_robot_from_nodes(train_env.robot_type)
 
-    train_scenes = train_env.scenes
+    train_scenes = train_env.scenes #train env is Environment, contains Scenes, which contain .name attr.
     train_scenes_sample_probs = train_env.scenes_freq_mult_prop if args.scene_freq_mult_train else None
-
+    
     train_dataset = EnvironmentDataset(train_env,
                                        hyperparams['state'],
                                        hyperparams['pred_state'],

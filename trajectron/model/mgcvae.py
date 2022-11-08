@@ -16,7 +16,8 @@ class MultimodalGenerativeCVAE(object):
                  hyperparams,
                  device,
                  edge_types,
-                 log_writer=None):
+                 log_writer=None,
+                 mode='full'):
         self.hyperparams = hyperparams
         self.env = env
         self.node_type = node_type
@@ -25,6 +26,7 @@ class MultimodalGenerativeCVAE(object):
         self.device = device
         self.edge_types = [edge_type for edge_type in edge_types if edge_type[0] is node_type]
         self.curr_iter = 0
+        self.mode = mode
 
         self.node_modules = dict()
 
@@ -57,7 +59,8 @@ class MultimodalGenerativeCVAE(object):
     def clear_submodules(self):
         self.node_modules.clear()
 
-    def create_node_models(self):
+
+    def add_node_history_encoder(self):
         ############################
         #   Node History Encoder   #
         ############################
@@ -66,6 +69,8 @@ class MultimodalGenerativeCVAE(object):
                                                    hidden_size=self.hyperparams['enc_rnn_dim_history'],
                                                    batch_first=True))
 
+
+    def add_node_future_encoder(self):
         ###########################
         #   Node Future Encoder   #
         ###########################
@@ -84,6 +89,8 @@ class MultimodalGenerativeCVAE(object):
                            model_if_absent=nn.Linear(self.state_length,
                                                      self.hyperparams['enc_rnn_dim_future']))
 
+
+    def add_robot_future_encoder(self):
         ############################
         #   Robot Future Encoder   #
         ############################
@@ -103,6 +110,8 @@ class MultimodalGenerativeCVAE(object):
                                model_if_absent=nn.Linear(self.robot_state_length,
                                                          self.hyperparams['enc_rnn_dim_future']))
 
+
+    def add_edge_influence_encoder(self):
         if self.hyperparams['edge_encoding']:
             ##############################
             #   Edge Influence Encoder   #
@@ -133,6 +142,8 @@ class MultimodalGenerativeCVAE(object):
 
                 self.eie_output_dims = self.hyperparams['enc_rnn_dim_edge_influence']
 
+
+    def add_map_encoder(self):
         ###################
         #   Map Encoder   #
         ###################
@@ -147,11 +158,15 @@ class MultimodalGenerativeCVAE(object):
                                                                  me_params['strides'],
                                                                  me_params['patch_size']))
 
+    
+    def add_latent(self):
         ################################
         #   Discrete Latent Variable   #
         ################################
         self.latent = DiscreteLatent(self.hyperparams, self.device)
 
+
+    def add_misc_encoders(self):
         ######################################################################
         #   Various Fully-Connected Layers from Encoder to Latent Variable   #
         ######################################################################
@@ -167,7 +182,6 @@ class MultimodalGenerativeCVAE(object):
             #              Map Encoder
             x_size += self.hyperparams['map_encoder'][self.node_type]['output_size']
 
-        z_size = self.hyperparams['N'] * self.hyperparams['K']
 
         if self.hyperparams['p_z_x_MLP_dims'] is not None:
             self.add_submodule(self.node_type + '/p_z_x',
@@ -191,14 +205,17 @@ class MultimodalGenerativeCVAE(object):
 
         self.add_submodule(self.node_type + '/hxy_to_z',
                            model_if_absent=nn.Linear(hxy_size, self.latent.z_dim))
+        return x_size
 
+
+    def add_decoder(self):
         ####################
         #   Decoder LSTM   #
         ####################
         if self.hyperparams['incl_robot_node']:
-            decoder_input_dims = self.pred_state_length + self.robot_state_length + z_size + x_size
+            decoder_input_dims = self.pred_state_length + self.robot_state_length + self.z_size + self.x_size
         else:
-            decoder_input_dims = self.pred_state_length + z_size + x_size
+            decoder_input_dims = self.pred_state_length + self.z_size + self.x_size
 
         self.add_submodule(self.node_type + '/decoder/state_action',
                            model_if_absent=nn.Sequential(
@@ -207,7 +224,7 @@ class MultimodalGenerativeCVAE(object):
         self.add_submodule(self.node_type + '/decoder/rnn_cell',
                            model_if_absent=nn.GRUCell(decoder_input_dims, self.hyperparams['dec_rnn_dim']))
         self.add_submodule(self.node_type + '/decoder/initial_h',
-                           model_if_absent=nn.Linear(z_size + x_size, self.hyperparams['dec_rnn_dim']))
+                           model_if_absent=nn.Linear(self.z_size + self.x_size, self.hyperparams['dec_rnn_dim']))
 
         ###################
         #   Decoder GMM   #
@@ -225,8 +242,25 @@ class MultimodalGenerativeCVAE(object):
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
                                                      self.hyperparams['GMM_components']))
 
-        self.x_size = x_size
-        self.z_size = z_size
+
+    def create_node_models(self, x_size=None):
+        self.z_size = self.hyperparams['N'] * self.hyperparams['K']
+        self.x_size = x_size 
+        if self.mode in ['full', 'stem']:
+            #encoder
+            self.add_node_history_encoder()
+            self.add_node_future_encoder()
+            self.add_robot_future_encoder()
+            self.add_edge_influence_encoder()
+            self.add_map_encoder()
+            self.add_latent()
+            self.x_size = self.add_misc_encoders() 
+        if self.mode in ['full', 'branch']:
+            #decoder
+            self.add_decoder()
+
+
+
 
     def create_edge_models(self, edge_types):
         for edge_type in edge_types:
@@ -274,7 +308,7 @@ class MultimodalGenerativeCVAE(object):
         #####################
         #   Edge Encoders   #
         #####################
-        if self.hyperparams['edge_encoding']:
+        if self.hyperparams['edge_encoding'] and self.mode in ['full', 'stem']: #only add edge models for encoder
             self.create_edge_models(edge_types)
 
         for name, module in self.node_modules.items():
@@ -958,7 +992,8 @@ class MultimodalGenerativeCVAE(object):
                    neighbors_edge_value,
                    robot,
                    map,
-                   prediction_horizon) -> torch.Tensor:
+                   prediction_horizon,
+                   br_input=None) -> torch.Tensor:
         """
         Calculates the training loss for a batch.
 
@@ -977,53 +1012,62 @@ class MultimodalGenerativeCVAE(object):
         """
         mode = ModeKeys.TRAIN
 
-        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
-                                                                     inputs=inputs,
-                                                                     inputs_st=inputs_st,
-                                                                     labels=labels,
-                                                                     labels_st=labels_st,
-                                                                     first_history_indices=first_history_indices,
-                                                                     neighbors=neighbors,
-                                                                     neighbors_edge_value=neighbors_edge_value,
-                                                                     robot=robot,
-                                                                     map=map)
+        if self.mode in ['full', 'stem']:
+            x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                        inputs=inputs,
+                                                                        inputs_st=inputs_st,
+                                                                        labels=labels,
+                                                                        labels_st=labels_st,
+                                                                        first_history_indices=first_history_indices,
+                                                                        neighbors=neighbors,
+                                                                        neighbors_edge_value=neighbors_edge_value,
+                                                                        robot=robot,
+                                                                        map=map)
+            z, kl = self.encoder(mode, x, y_e)
+            mutual_inf_q = mutual_inf_mc(self.latent.q_dist)
+            mutual_inf_p = mutual_inf_mc(self.latent.p_dist)
+            if self.mode == 'stem': 
+                return (x, x_nr_t, y, y_r, n_s_t0, z), kl, mutual_inf_p
+        
+        if self.mode in ['full', 'branch']:
+            if self.mode == 'branch':
+                x, x_nr_t, y_e, y_r, y, n_s_t0, z = br_input
+            log_p_y_xz = self.decoder(mode, x, x_nr_t, y, y_r, n_s_t0, z,
+                                    labels,  # Loss is calculated on unstandardized label
+                                    prediction_horizon,
+                                    self.hyperparams['k'])
 
-        z, kl = self.encoder(mode, x, y_e)
-        log_p_y_xz = self.decoder(mode, x, x_nr_t, y, y_r, n_s_t0, z,
-                                  labels,  # Loss is calculated on unstandardized label
-                                  prediction_horizon,
-                                  self.hyperparams['k'])
+            log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
+            log_likelihood = torch.mean(log_p_y_xz_mean)
+            if self.mode == 'branch':
+                return log_likelihood
 
-        log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
-        log_likelihood = torch.mean(log_p_y_xz_mean)
+        if self.mode == 'full':
+            ELBO = log_likelihood - self.kl_weight * kl + 1. * mutual_inf_p
+            loss = -ELBO
 
-        mutual_inf_q = mutual_inf_mc(self.latent.q_dist)
-        mutual_inf_p = mutual_inf_mc(self.latent.p_dist)
+            if self.hyperparams['log_histograms'] and self.log_writer is not None:
+                self.log_writer.add_histogram('%s/%s' % (str(self.node_type), 'log_p_y_xz'),
+                                            log_p_y_xz_mean,
+                                            self.curr_iter)
 
-        ELBO = log_likelihood - self.kl_weight * kl + 1. * mutual_inf_p
-        loss = -ELBO
+            if self.log_writer is not None:
+                self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'mutual_information_q'),
+                                        mutual_inf_q,
+                                        self.curr_iter)
+                self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'mutual_information_p'),
+                                        mutual_inf_p,
+                                        self.curr_iter)
+                self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'log_likelihood'),
+                                        log_likelihood,
+                                        self.curr_iter)
+                self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'loss'),
+                                        loss,
+                                        self.curr_iter)
+                if self.hyperparams['log_histograms']:
+                    self.latent.summarize_for_tensorboard(self.log_writer, str(self.node_type), self.curr_iter)
+            return loss
 
-        if self.hyperparams['log_histograms'] and self.log_writer is not None:
-            self.log_writer.add_histogram('%s/%s' % (str(self.node_type), 'log_p_y_xz'),
-                                          log_p_y_xz_mean,
-                                          self.curr_iter)
-
-        if self.log_writer is not None:
-            self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'mutual_information_q'),
-                                       mutual_inf_q,
-                                       self.curr_iter)
-            self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'mutual_information_p'),
-                                       mutual_inf_p,
-                                       self.curr_iter)
-            self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'log_likelihood'),
-                                       log_likelihood,
-                                       self.curr_iter)
-            self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'loss'),
-                                       loss,
-                                       self.curr_iter)
-            if self.hyperparams['log_histograms']:
-                self.latent.summarize_for_tensorboard(self.log_writer, str(self.node_type), self.curr_iter)
-        return loss
 
     def eval_loss(self,
                   inputs,
@@ -1035,7 +1079,8 @@ class MultimodalGenerativeCVAE(object):
                   neighbors_edge_value,
                   robot,
                   map,
-                  prediction_horizon) -> torch.Tensor:
+                  prediction_horizon,
+                  br_input=None) -> torch.Tensor:
         """
         Calculates the evaluation loss for a batch.
 
@@ -1055,31 +1100,39 @@ class MultimodalGenerativeCVAE(object):
 
         mode = ModeKeys.EVAL
 
-        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
-                                                                     inputs=inputs,
-                                                                     inputs_st=inputs_st,
-                                                                     labels=labels,
-                                                                     labels_st=labels_st,
-                                                                     first_history_indices=first_history_indices,
-                                                                     neighbors=neighbors,
-                                                                     neighbors_edge_value=neighbors_edge_value,
-                                                                     robot=robot,
-                                                                     map=map)
+        if self.mode in ['full', 'stem']:
+            x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                        inputs=inputs,
+                                                                        inputs_st=inputs_st,
+                                                                        labels=labels,
+                                                                        labels_st=labels_st,
+                                                                        first_history_indices=first_history_indices,
+                                                                        neighbors=neighbors,
+                                                                        neighbors_edge_value=neighbors_edge_value,
+                                                                        robot=robot,
+                                                                        map=map)
 
-        num_components = self.hyperparams['N'] * self.hyperparams['K']
-        ### Importance sampled NLL estimate
-        z, _ = self.encoder(mode, x, y_e)  # [k_eval, nbs, N*K]
-        z = self.latent.sample_p(1, mode, full_dist=True)
-        y_dist, _ = self.p_y_xz(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
-                                prediction_horizon, num_samples=1, num_components=num_components)
-        # We use unstandardized labels to compute the loss
-        log_p_yt_xz = torch.clamp(y_dist.log_prob(labels), max=self.hyperparams['log_p_yt_xz_max'])
-        log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
-        log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
-        log_likelihood = torch.mean(log_p_y_xz_mean)
-        nll = -log_likelihood
 
-        return nll
+            num_components = self.hyperparams['N'] * self.hyperparams['K']
+            ### Importance sampled NLL estimate
+            z, _ = self.encoder(mode, x, y_e)  # [k_eval, nbs, N*K]
+            z = self.latent.sample_p(1, mode, full_dist=True)
+            if self.mode == 'stem':
+                return (x, x_nr_t, y_e, y_r, y, n_s_t0, z, num_components)
+
+        if self.mode in ['full', 'branch']:
+            if self.mode == 'branch':
+                x, x_nr_t, y_e, y_r, y, n_s_t0, z, num_components = br_input
+            y_dist, _ = self.p_y_xz(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
+                                    prediction_horizon, num_samples=1, num_components=num_components)
+            # We use unstandardized labels to compute the loss
+            log_p_yt_xz = torch.clamp(y_dist.log_prob(labels), max=self.hyperparams['log_p_yt_xz_max'])
+            log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
+            log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
+            log_likelihood = torch.mean(log_p_y_xz_mean)
+            nll = -log_likelihood
+            return nll
+
 
     def predict(self,
                 inputs,
@@ -1094,7 +1147,8 @@ class MultimodalGenerativeCVAE(object):
                 z_mode=False,
                 gmm_mode=False,
                 full_dist=True,
-                all_z_sep=False):
+                all_z_sep=False,
+                br_input=None):
         """
         Predicts the future of a batch of nodes.
 
@@ -1116,28 +1170,34 @@ class MultimodalGenerativeCVAE(object):
         """
         mode = ModeKeys.PREDICT
 
-        x, x_nr_t, _, y_r, _, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
-                                                                   inputs=inputs,
-                                                                   inputs_st=inputs_st,
-                                                                   labels=None,
-                                                                   labels_st=None,
-                                                                   first_history_indices=first_history_indices,
-                                                                   neighbors=neighbors,
-                                                                   neighbors_edge_value=neighbors_edge_value,
-                                                                   robot=robot,
-                                                                   map=map)
+        if self.mode in ['full', 'stem']:
+            x, x_nr_t, _, y_r, _, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                    inputs=inputs,
+                                                                    inputs_st=inputs_st,
+                                                                    labels=None,
+                                                                    labels_st=None,
+                                                                    first_history_indices=first_history_indices,
+                                                                    neighbors=neighbors,
+                                                                    neighbors_edge_value=neighbors_edge_value,
+                                                                    robot=robot,
+                                                                    map=map)
 
-        self.latent.p_dist = self.p_z_x(mode, x)
-        z, num_samples, num_components = self.latent.sample_p(num_samples,
-                                                              mode,
-                                                              most_likely_z=z_mode,
-                                                              full_dist=full_dist,
-                                                              all_z_sep=all_z_sep)
+            self.latent.p_dist = self.p_z_x(mode, x)
+            z, num_samples, num_components = self.latent.sample_p(num_samples,
+                                                                mode,
+                                                                most_likely_z=z_mode,
+                                                                full_dist=full_dist,
+                                                                all_z_sep=all_z_sep)
+            if self.mode == 'stem':
+                return (x, x_nr_t, y_r, n_s_t0, z, num_samples, num_components)
 
-        _, our_sampled_future = self.p_y_xz(mode, x, x_nr_t, y_r, n_s_t0, z,
-                                            prediction_horizon,
-                                            num_samples,
-                                            num_components,
-                                            gmm_mode)
+        if self.mode in ['full', 'branch']:
+            if self.mode == 'branch':
+                x, x_nr_t, y_r, n_s_t0, z, num_samples, num_components = br_input
+            _, our_sampled_future = self.p_y_xz(mode, x, x_nr_t, y_r, n_s_t0, z,
+                                                prediction_horizon,
+                                                num_samples,
+                                                num_components,
+                                                gmm_mode)
 
-        return our_sampled_future
+            return our_sampled_future

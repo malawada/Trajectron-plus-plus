@@ -7,12 +7,13 @@ from model.dataset import get_timesteps_data, restore
 class Trajectron(object):
     def __init__(self, model_registrar,
                  hyperparams, log_writer,
-                 device):
+                 device, mode='full'):
         super(Trajectron, self).__init__()
         self.hyperparams = hyperparams
         self.log_writer = log_writer
         self.device = device
         self.curr_iter = 0
+        self.mode = mode # options: 'full', 'stem', and 'branch'. Determines which layers to discard.
 
         self.model_registrar = model_registrar
         self.node_models_dict = dict()
@@ -46,7 +47,8 @@ class Trajectron(object):
                                                                             self.hyperparams,
                                                                             self.device,
                                                                             edge_types,
-                                                                            log_writer=self.log_writer)
+                                                                            log_writer=self.log_writer,
+                                                                            mode=self.mode)
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
