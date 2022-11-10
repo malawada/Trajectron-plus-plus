@@ -67,36 +67,41 @@ class Trajectron(object):
             self.node_models_dict[node_type].step_annealers()
 
     def train_loss(self, batch, node_type):
-        (first_history_index,
-         x_t, y_t, x_st_t, y_st_t,
-         neighbors_data_st,
-         neighbors_edge_value,
-         robot_traj_st_t,
-         map) = batch
-
-        x = x_t.to(self.device)
-        y = y_t.to(self.device)
-        x_st_t = x_st_t.to(self.device)
-        y_st_t = y_st_t.to(self.device)
-        if robot_traj_st_t is not None:
-            robot_traj_st_t = robot_traj_st_t.to(self.device)
-        if type(map) == torch.Tensor:
-            map = map.to(self.device)
-
-        # Run forward pass
+        '''takes typical inputs for stem/full model. takes passthrough of stem output for branch model: (stem+branch) = full'''
         model = self.node_models_dict[node_type]
-        loss = model.train_loss(inputs=x,
-                                inputs_st=x_st_t,
-                                first_history_indices=first_history_index,
-                                labels=y,
-                                labels_st=y_st_t,
-                                neighbors=restore(neighbors_data_st),
-                                neighbors_edge_value=restore(neighbors_edge_value),
-                                robot=robot_traj_st_t,
-                                map=map,
-                                prediction_horizon=self.ph)
+        if self.mode in ['full', 'stem']:
+            (first_history_index,
+            x_t, y_t, x_st_t, y_st_t,
+            neighbors_data_st,
+            neighbors_edge_value,
+            robot_traj_st_t,
+            map) = batch
 
-        return loss
+            x = x_t.to(self.device)
+            y = y_t.to(self.device)
+            x_st_t = x_st_t.to(self.device)
+            y_st_t = y_st_t.to(self.device)
+            if robot_traj_st_t is not None:
+                robot_traj_st_t = robot_traj_st_t.to(self.device)
+            if type(map) == torch.Tensor:
+                map = map.to(self.device)
+            batch_params = (x,
+                            x_st_t,
+                            first_history_index,
+                            y,
+                            y_st_t,
+                            restore(neighbors_data_st),
+                            restore(neighbors_edge_value),
+                            robot_traj_st_t,
+                            map,
+                            self.ph)
+            outputs, kl, mutual_inf_p = model.train_loss(batch_params)
+            return outputs, kl, mutual_inf_p
+
+        elif self.mode in ['branch']:
+            batch_params = batch #pass through
+            loglik = model.train_loss(batch_params)
+            return loglik
 
     def eval_loss(self, batch, node_type):
         (first_history_index,
@@ -195,3 +200,4 @@ class Trajectron(object):
                 predictions_dict[ts][nodes[i]] = np.transpose(predictions_np[:, [i]], (1, 0, 2, 3))
 
         return predictions_dict
+

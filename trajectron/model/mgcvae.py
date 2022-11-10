@@ -982,18 +982,7 @@ class MultimodalGenerativeCVAE(object):
         log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
         return log_p_y_xz
 
-    def train_loss(self,
-                   inputs,
-                   inputs_st,
-                   first_history_indices,
-                   labels,
-                   labels_st,
-                   neighbors,
-                   neighbors_edge_value,
-                   robot,
-                   map,
-                   prediction_horizon,
-                   br_input=None) -> torch.Tensor:
+    def train_loss(self, batch_params) -> torch.Tensor:
         """
         Calculates the training loss for a batch.
 
@@ -1013,6 +1002,16 @@ class MultimodalGenerativeCVAE(object):
         mode = ModeKeys.TRAIN
 
         if self.mode in ['full', 'stem']:
+            (inputs,
+            inputs_st,
+            first_history_indices,
+            labels,
+            labels_st,
+            neighbors,
+            neighbors_edge_value,
+            robot,
+            map,
+            prediction_horizon) = batch_params
             x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
                                                                         inputs=inputs,
                                                                         inputs_st=inputs_st,
@@ -1026,12 +1025,13 @@ class MultimodalGenerativeCVAE(object):
             z, kl = self.encoder(mode, x, y_e)
             mutual_inf_q = mutual_inf_mc(self.latent.q_dist)
             mutual_inf_p = mutual_inf_mc(self.latent.p_dist)
+            kl = self.kl_weight * kl #part of ELBO loss term below. moved multiplication up to here.
             if self.mode == 'stem': 
                 return (x, x_nr_t, y, y_r, n_s_t0, z), kl, mutual_inf_p
         
         if self.mode in ['full', 'branch']:
             if self.mode == 'branch':
-                x, x_nr_t, y_e, y_r, y, n_s_t0, z = br_input
+                x, x_nr_t, y_e, y_r, y, n_s_t0, z = batch_params
             log_p_y_xz = self.decoder(mode, x, x_nr_t, y, y_r, n_s_t0, z,
                                     labels,  # Loss is calculated on unstandardized label
                                     prediction_horizon,
@@ -1043,7 +1043,7 @@ class MultimodalGenerativeCVAE(object):
                 return log_likelihood
 
         if self.mode == 'full':
-            ELBO = log_likelihood - self.kl_weight * kl + 1. * mutual_inf_p
+            ELBO = log_likelihood - kl + 1. * mutual_inf_p
             loss = -ELBO
 
             if self.hyperparams['log_histograms'] and self.log_writer is not None:
