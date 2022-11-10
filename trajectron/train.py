@@ -20,6 +20,9 @@ from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
 from model.dataset import EnvironmentDataset, collate
 from tensorboardX import SummaryWriter
+import sys
+sys.path.append('../../model/')
+from hydratrajectron import HydraTrajectron
 # torch.autograd.set_detect_anomaly(True)
 
 if not torch.cuda.is_available() or args.device == 'cpu':
@@ -205,12 +208,10 @@ def main():
                                         hyperparams['edge_removal_filter'])
             print(f"Created Scene Graph for Evaluation Scene {i}")
 
-    model_registrar = ModelRegistrar(model_dir, args.device)
 
-    trajectron = Trajectron(model_registrar,
-                            hyperparams,
-                            log_writer,
-                            args.device)
+    # Create model
+    config = None #TODO. map hyperparams to this config
+    trajectron = HydraTrajectron(config) #TODO fix this
 
     trajectron.set_environment(train_env)
     trajectron.set_annealing_params()
@@ -218,10 +219,7 @@ def main():
 
     eval_trajectron = None
     if args.eval_every is not None or args.vis_every is not None:
-        eval_trajectron = Trajectron(model_registrar,
-                                     hyperparams,
-                                     log_writer,
-                                     args.eval_device)
+        eval_trajectron = HydraTrajectron(config) #TODO fix this. it should load the same model weights as the train model.
         eval_trajectron.set_environment(eval_env)
         eval_trajectron.set_annealing_params()
     print('Created Evaluation Model.')
@@ -231,8 +229,8 @@ def main():
     for node_type in train_env.NodeType:
         if node_type not in hyperparams['pred_state']:
             continue
-        optimizer[node_type] = optim.Adam([{'params': model_registrar.get_all_but_name_match('map_encoder').parameters()},
-                                           {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr':0.0008}], lr=hyperparams['learning_rate'])
+        optimizer[node_type] = optim.Adam([{'params': trajectron.get_parameter_list_without_map()},
+                                           {'params': trajectron.get_parameter_list_for_map(), 'lr':0.0008}], lr=hyperparams['learning_rate'])
         # Set Learning Rate
         if hyperparams['learning_rate_style'] == 'const':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type], gamma=1.0)
